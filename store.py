@@ -74,7 +74,22 @@ CREATE TABLE IF NOT EXISTS plans (
     matching_trace TEXT,
     based_on_version INTEGER NOT NULL,
     plan_hash TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'proposed'
+    state TEXT NOT NULL DEFAULT 'proposed',
+    risk_note TEXT
+);
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    key TEXT PRIMARY KEY,
+    result TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    location_hint TEXT,
+    text TEXT NOT NULL,
+    synthetic INTEGER NOT NULL DEFAULT 1,
+    received_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS reservations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

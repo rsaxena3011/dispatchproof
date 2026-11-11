@@ -77,8 +77,37 @@ def inject_sos(store):
     return agent_a.ingest(store, SOS_REPORT)
 
 
+def scenario_setup(store):
+    """Demo-integrity setup (C11): the on-screen scenario button runs ONLY
+    up to the stale rejection — load -> plan -> INJECT flip -> stale
+    approve (409). Everything after that (revised plan, its approval, the
+    dispatch, the ack) is a real human click in the console. The full
+    scripted run below survives only as the automated test harness."""
+    steps = []
+    results = load_reports(store)
+    inc1 = results[0]["incident_id"]
+    steps.append({"step": "reports_loaded",
+                  "incidents": [r["incident_id"] for r in results]})
+    p1 = agent_b.propose_plan(store, inc1)
+    plan1 = p1["plan"]
+    steps.append({"step": "plan_proposed", "plan_id": plan1["plan_id"],
+                  "crew_id": plan1["assignments"][0]["crew_id"],
+                  "based_on_version": plan1["based_on_version"],
+                  "plan_hash": plan1["plan_hash_short"]})
+    flip = inject_flip(store, plan1["assignments"][0]["crew_id"])
+    steps.append({"step": "inject_flip", **flip})
+    stale = gate_mod.approve(store, plan1["plan_id"], plan1["based_on_version"])
+    steps.append({"step": "approve_stale", **stale})
+    steps.append({"step": "awaiting_operator",
+                  "note": "Revised plan, approval, dispatch and ack are "
+                          "human clicks from here."})
+    return {"ok": True, "steps": steps}
+
+
 def run_scenario(store):
-    """The centrepiece, end to end, on the judges' own code path:
+    """TEST HARNESS ONLY — the centrepiece end to end on the judges' own
+    code path, used by the automated suite (T01–T10) and the /api/scenario
+    endpoint. The on-screen demo never auto-approves (C11):
     load -> plan -> INJECT flip -> stale approve (409) -> revised plan ->
     approve -> dispatch -> ack. Returns a step transcript."""
     steps = []

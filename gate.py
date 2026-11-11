@@ -22,31 +22,48 @@ def plan_hash(plan_id, incident_id, assignments):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def approve(store, plan_id, seen_version):
-    """§4a — operator action. seen_version is the version on the plan card."""
+def approve(store, plan_id, seen_version, actor="operator"):
+    """§4a — operator action. seen_version is the version on the plan card.
+    Authorization (C8): only the operator identity may approve; an agent
+    identity is rejected server-side, before any version check."""
     with store.lock:
+        if actor != "operator":
+            store.audit("AUTHORIZATION_REJECTED", "system",
+                        {"endpoint": "approve", "actor": actor,
+                         "ref": plan_id})
+            store.commit()
+            return {"ok": False, "error": "FORBIDDEN", "http": 403,
+                    "reason": "agent_identity_cannot_approve"}
         plan = store.one("SELECT * FROM plans WHERE plan_id=?", (plan_id,))
         if plan is None:
             return {"ok": False, "error": "PLAN_NOT_FOUND", "http": 404}
         current = store.resource_version()
         recomputed = plan_hash(plan["plan_id"], plan["incident_id"],
                                json.loads(plan["assignments"]))
+        # F1 fix (Review Round 1): only a plan whose WORLD moved is stale.
+        # A wrong request (bad seen_version, duplicate approve) is refused
+        # WITHOUT destroying the plan or releasing its reservation.
+        plan_stale = (plan["based_on_version"] != current
+                      or recomputed != plan["plan_hash"])
         stale_reason = None
         if plan["state"] not in ("proposed", "reserved"):
             stale_reason = "plan_not_approvable"
-        elif seen_version != current or plan["based_on_version"] != current:
+        elif plan_stale:
+            stale_reason = ("hash_mismatch" if recomputed != plan["plan_hash"]
+                            else "version_mismatch")
+        elif seen_version != current:
             stale_reason = "version_mismatch"
-        elif recomputed != plan["plan_hash"]:
-            stale_reason = "hash_mismatch"
 
         if stale_reason:
-            store.execute("UPDATE plans SET state='stale-rejected' WHERE plan_id=?",
-                          (plan_id,))
-            store.execute("UPDATE reservations SET state='released' "
-                          "WHERE plan_id=? AND state='held'", (plan_id,))
+            if stale_reason != "plan_not_approvable" and plan_stale:
+                store.execute("UPDATE plans SET state='stale-rejected' WHERE plan_id=?",
+                              (plan_id,))
+                store.execute("UPDATE reservations SET state='released' "
+                              "WHERE plan_id=? AND state='held'", (plan_id,))
             store.audit("APPROVAL_REJECTED_STALE", "operator",
                         {"plan_id": plan_id, "approved_version": seen_version,
-                         "current_version": current, "reason": stale_reason})
+                         "current_version": current, "reason": stale_reason,
+                         "plan_stale": plan_stale})
             store.commit()
             return {"ok": False, "error": "STALE", "http": 409,
                     "reason": stale_reason}

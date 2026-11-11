@@ -54,3 +54,21 @@ def area_update(location, status_key, crew_name=None, ts=None):
     crew_line = f"टीम: {crew_name}" if crew_name else "टीम तय नहीं हुई है।"
     return (f"{location['name']} ({location['code']}): "
             f"{status_lines[status_key]} | {crew_line} | समय {_time_ist(ts)}")
+
+
+def situation_en(active_incidents, acknowledged, alert_text=None):
+    """Ward situation line, English (C10). Status only, no promises."""
+    line = (f"Ward Ghatauli situation: {active_incidents} active "
+            f"incident(s), {acknowledged} acknowledged assignment(s).")
+    if alert_text:
+        line += f" Latest alert: {alert_text}"
+    return line
+
+
+def situation_hi(active_incidents, acknowledged, alert_text=None):
+    """Ward situation line, Hindi (C10) — fixed template, status only."""
+    line = (f"वार्ड घाटौली स्थिति: {active_incidents} सक्रिय घटनाएं, "
+            f"{acknowledged} स्वीकृत कार्य-भार।")
+    if alert_text:
+        line += f" नवीनतम चेतावनी: {alert_text}"
+    return line

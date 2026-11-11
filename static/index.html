@@ -25,9 +25,10 @@
 
 <section class="controls">
   <button id="btn-load">Load reports (RPT-001…004)</button>
-  <button id="btn-scenario" class="primary">Scenario: stale approval</button>
+  <button id="btn-scenario" class="primary">Scenario setup: stale approval (then you drive)</button>
   <button id="btn-flip">INJECT: CREW-2 flips unavailable <span class="badge">TEST CONDITION</span></button>
   <button id="btn-sos">INJECT: SOS-001 (medical, LOC-04) <span class="badge">TEST CONDITION</span></button>
+  <button id="btn-alert">INJECT: road-closure alert (LOC-01) <span class="badge">TEST CONDITION</span></button>
   <button id="btn-reset">Reset drill</button>
 </section>
 
@@ -35,11 +36,17 @@
   <div class="agent-card">
     <strong>Agent A — Intake &amp; Verification.</strong>
     Extracts facts, links duplicates, flags missing info. <em>No dispatch powers.</em>
+    <div class="meta">Tools: intake · extract · validate · calculate_urgency · publish · correlate_alert</div>
+    <div class="meta"><strong>Dispatch permission: NOT GRANTED</strong> (enforced server-side)</div>
+    <div class="trace" id="trace-a"></div>
   </div>
   <div class="agent-card">
     <strong>Agent B — Resource Coordination.</strong>
     Matches and reserves crews. <em>Cannot approve, cannot dispatch, cannot rewrite severity.</em>
     Urgency scores are computed by a published rubric in code.
+    <div class="meta">Tools: get_available_crews · evaluate · build_plan · reserve · request_approval · adjust_plan</div>
+    <div class="meta"><strong>Dispatch permission: NOT GRANTED</strong> (enforced server-side)</div>
+    <div class="trace" id="trace-b"></div>
   </div>
   <div class="agent-card gate-card">
     <strong>The Gate.</strong>
@@ -60,6 +67,8 @@
     <div id="crews"></div>
     <h2>Responder inbox (simulation)</h2>
     <div id="inbox"></div>
+    <h2>Ward situation (synthetic)</h2>
+    <div id="situation"></div>
     <h2>Area updates</h2>
     <div id="area"></div>
   </aside>

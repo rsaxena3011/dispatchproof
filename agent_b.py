@@ -46,12 +46,19 @@ def propose_plan(store, incident_id):
         people = facts.get("people_count") or 0
         reserved = _reserved_crew_ids(store)
         crews = store.all("SELECT * FROM crews WHERE status='available'")
+        # Visible tool trace (C9): rows written at the real call sites.
+        store.audit("TOOL_CALL", "agent_b",
+                    {"tool": "get_available_crews", "status": "ok",
+                     "ref": incident_id, "available": len(crews)})
         capable = [c for c in crews
                    if capability in json.loads(c["capabilities"])
                    and c["crew_id"] not in reserved]
         checks = {"capability": "pass" if capable else "fail",
                   "capacity": "fail", "availability": "pass" if capable else "fail"}
         if not capable:
+            store.audit("TOOL_CALL", "agent_b",
+                        {"tool": "evaluate", "status": "fail",
+                         "ref": incident_id, "checks": checks})
             store.commit()
             return {"ok": False, "error": "NO_CAPABLE_CREW", "http": 422,
                     "checks": checks}
@@ -91,9 +98,36 @@ def propose_plan(store, incident_id):
         store.audit("RESOURCE_RESERVED", "agent_b",
                     {"plan_id": plan_id, "crew_id": crew["crew_id"],
                      "people_assigned": people})
+        store.audit("TOOL_CALL", "agent_b",
+                    {"tool": "evaluate", "status": "ok", "ref": plan_id,
+                     "checks": checks})
+        store.audit("TOOL_CALL", "agent_b",
+                    {"tool": "build_plan", "status": "ok", "ref": plan_id,
+                     "crew_id": crew["crew_id"]})
+        store.audit("TOOL_CALL", "agent_b",
+                    {"tool": "reserve", "status": "ok", "ref": plan_id,
+                     "crew_id": crew["crew_id"]})
+        store.audit("TOOL_CALL", "agent_b",
+                    {"tool": "request_approval", "status": "awaiting_operator",
+                     "ref": plan_id})
         store.commit()
         plan = store.one("SELECT * FROM plans WHERE plan_id=?", (plan_id,))
         return {"ok": True, "plan": _plan_view(plan)}
+
+
+def flag_plan_risk(store, plan_id, note):
+    """Agent B's alert adjustment (C10): a correlated ward alert marks the
+    live plan with a visible risk note. It never edits the plan itself —
+    assignments and hash are untouched, so approvals stay meaningful."""
+    with store.lock:
+        store.execute("UPDATE plans SET risk_note=? WHERE plan_id=?",
+                      (note, plan_id))
+        store.audit("PLAN_RISK_FLAGGED", "agent_b",
+                    {"plan_id": plan_id, "risk_note": note})
+        store.audit("TOOL_CALL", "agent_b",
+                    {"tool": "adjust_plan", "status": "flagged",
+                     "ref": plan_id, "note": note})
+        store.commit()
 
 
 def _plan_view(plan):
@@ -107,4 +141,5 @@ def _plan_view(plan):
         "plan_hash": plan["plan_hash"],
         "plan_hash_short": plan["plan_hash"][:12],
         "state": plan["state"],
+        "risk_note": plan["risk_note"] if "risk_note" in plan.keys() else None,
     }

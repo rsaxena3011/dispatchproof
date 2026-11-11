@@ -52,3 +52,10 @@ h2 { font-size: 15px; margin: 6px 0 8px; text-transform: uppercase; letter-spaci
 #audit .ev { color: #7dd3fc; font-weight: 700; }
 #audit .actor { color: #f0abfc; }
 #audit .rej { color: #fca5a5; }
+
+/* Delta additions (C9/C10/C12) */
+.trace { margin-top: 6px; border-top: 1px dashed #ccc; padding-top: 4px; }
+.trace-row { font-size: 12px; font-family: monospace; }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px; font-size: 13px; margin: 6px 0; }
+.breakdown { margin: 4px 0; }
+.factor { display: inline-block; background: #eef2ff; border-radius: 4px; padding: 1px 6px; margin-right: 4px; font-size: 12px; }

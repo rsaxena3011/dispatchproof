@@ -35,17 +35,53 @@ def recompute_ranks(store, actor="system"):
         i["medical_override"] = bool(i["medical_override"])
     ordered = queue_order(incidents)
     moves = []
+    arrivals = []
     for idx, inc in enumerate(ordered, start=1):
         if inc["queue_rank"] != idx:
             if inc["queue_rank"] is not None:
                 moves.append({"incident_id": inc["incident_id"],
                               "from": inc["queue_rank"], "to": idx})
+            else:
+                # F5 fix (Review Round 1): the arriving incident's own move
+                # is recorded too — but only alongside real re-orders, so a
+                # first ranking stays silent as the predeclared T06
+                # sequence requires.
+                arrivals.append({"incident_id": inc["incident_id"],
+                                   "from": None, "to": idx})
             store.execute("UPDATE incidents SET queue_rank=? WHERE incident_id=?",
                           (idx, inc["incident_id"]))
     if moves:
+        moves = moves + arrivals
         store.audit("QUEUE_RESORTED", actor,
                     {"moves": moves, "order": [i["incident_id"] for i in ordered]})
     return ordered
+
+
+def correlate_alert(store, alert):
+    """Agent A's alert job (C10): link a ward alert to incidents at the
+    alert's location or an adjacent one. Called under the store lock.
+    Returns the correlated incident ids."""
+    def _num(code):
+        try:
+            return int(str(code).split("-")[1])
+        except Exception:
+            return None
+
+    target = _num(alert.get("location_hint"))
+    correlated = []
+    for inc in store.all("SELECT * FROM incidents"):
+        n = _num(inc["location_code"])
+        if target is not None and n is not None and abs(n - target) <= 1:
+            correlated.append(inc["incident_id"])
+            store.audit("ALERT_CORRELATED", "agent_a",
+                        {"alert_id": alert["alert_id"],
+                         "incident_id": inc["incident_id"],
+                         "location_code": inc["location_code"]})
+    store.audit("TOOL_CALL", "agent_a",
+                {"tool": "correlate_alert",
+                 "status": "ok" if correlated else "no_match",
+                 "ref": alert["alert_id"], "correlated": correlated})
+    return correlated
 
 
 def ingest(store, report):
@@ -66,6 +102,19 @@ def ingest(store, report):
         store.audit("REPORT_RECEIVED", "agent_a",
                     {"report_id": report["report_id"],
                      "channel": report.get("channel"), "parse_mode": mode})
+        # Visible tool trace (C9): rows written at the real call sites.
+        store.audit("TOOL_CALL", "agent_a",
+                    {"tool": "intake", "status": "ok",
+                     "ref": report["report_id"]})
+        store.audit("TOOL_CALL", "agent_a",
+                    {"tool": "extract", "status": "ok",
+                     "ref": report["report_id"],
+                     "fields": sorted(k for k, v in facts.items()
+                                      if v is not None and not k.startswith("_"))})
+        store.audit("TOOL_CALL", "agent_a",
+                    {"tool": "validate",
+                     "status": "flagged" if missing else "ok",
+                     "ref": report["report_id"], "missing_info": missing})
         if mode == "rules":
             store.audit("PARSE_FALLBACK_RULES", "agent_a",
                         {"report_id": report["report_id"], "parse_mode": "rules"})
@@ -91,6 +140,9 @@ def ingest(store, report):
                           (duplicate_of, report["report_id"]))
             store.audit("REPORT_LINKED_DUPLICATE", "agent_a",
                         {"report_id": report["report_id"], "incident_id": duplicate_of})
+            store.audit("TOOL_CALL", "agent_a",
+                        {"tool": "publish", "status": "linked_duplicate",
+                         "ref": duplicate_of})
             store.commit()
             return {"report_id": report["report_id"], "incident_id": duplicate_of,
                     "is_duplicate": True, "duplicate_of": duplicate_of,
@@ -99,6 +151,10 @@ def ingest(store, report):
 
         incident_id = _next_id(store, "incident_counter", "INC")
         result = rubric.score(facts, location)
+        store.audit("TOOL_CALL", "agent_a",
+                    {"tool": "calculate_urgency", "status": "ok",
+                     "ref": incident_id, "score": result["score"],
+                     "band": result["band"]})
         seq_row = store.one("SELECT COALESCE(MAX(seq), 0) AS s FROM audit")
         store.execute(
             "INSERT INTO incidents(incident_id, location_code, hazard_type, facts, "
@@ -115,6 +171,8 @@ def ingest(store, report):
         store.audit("INCIDENT_CREATED", "agent_a",
                     {"incident_id": incident_id, "report_id": report["report_id"],
                      "location_code": facts["location_code"]})
+        store.audit("TOOL_CALL", "agent_a",
+                    {"tool": "publish", "status": "ok", "ref": incident_id})
         store.audit("INCIDENT_SCORED", "agent_a",
                     {"incident_id": incident_id, "score": result["score"],
                      "band": result["band"], "reason": result["reason"],

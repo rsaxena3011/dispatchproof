@@ -210,6 +210,10 @@ def extract(report, location):
     # actionable life-risk signal (the RPT-003 case: no people, no life risk,
     # trend unknown). A report with a life-risk signal is acted on, not sent
     # back for trend verification; its F4 score still uses unknown = 4.
+    # NOTE (Review Round 1, F7): this discipline deliberately lives HERE, in
+    # the extraction layer — rubric.score() is a pure function that honours
+    # whatever _missing_info it is given, so direct rubric calls must pass
+    # the post-discipline list, exactly as ingest() does.
     if (facts.get("hazard_progression") == "unknown"
             and facts.get("life_risk_condition") != "none_reported"):
         missing = [m for m in missing if m != "hazard_trend"]

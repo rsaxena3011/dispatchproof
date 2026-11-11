@@ -156,7 +156,11 @@ def test_t05_rubric_exact_and_reproducible(tmp_path):
 def test_t06_audit_completeness_and_append_only(tmp_path):
     s, _ = fresh(tmp_path)
     replay.run_scenario(s)
-    ev = [e for e in events(s) if e != "PARSE_FALLBACK_RULES"]
+    ev = [e for e in events(s)
+          if e not in ("PARSE_FALLBACK_RULES", "TOOL_CALL")]
+    # TOOL_CALL rows (challenge correction C9) are additive observability
+    # written at the agents' real call sites; the predeclared sequence
+    # below covers state-change events and is unchanged.
     expected = [
         "REPORT_RECEIVED", "INCIDENT_CREATED", "INCIDENT_SCORED",
         "REPORT_RECEIVED", "REPORT_LINKED_DUPLICATE",

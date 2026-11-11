@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 import agent_a
 import agent_b
+import alerts as alerts_mod
 import gate as gate_mod
 import inbox
 import replay
@@ -50,9 +51,29 @@ def incident_view(store, inc):
     reports = store.all(
         "SELECT report_id, channel, lang, text, parse_mode FROM reports "
         "WHERE incident_id=? ORDER BY report_id", (inc["incident_id"],))
-    plans = [agent_b._plan_view(p) for p in store.all(
-        "SELECT * FROM plans WHERE incident_id=? ORDER BY plan_id",
-        (inc["incident_id"],))]
+    plans = []
+    for p in store.all(
+            "SELECT * FROM plans WHERE incident_id=? ORDER BY plan_id",
+            (inc["incident_id"],)):
+        view = agent_b._plan_view(p)
+        rej = store.one(
+            "SELECT payload FROM audit WHERE event='APPROVAL_REJECTED_STALE' "
+            "AND payload LIKE ? ORDER BY seq DESC LIMIT 1",
+            (f'%"plan_id": "{p["plan_id"]}"%',))
+        if rej:
+            payload = json.loads(rej["payload"])
+            view["rejection"] = {
+                "approved_version": payload.get("approved_version"),
+                "current_version": payload.get("current_version"),
+                "reason": payload.get("reason"),
+                "plan_hash_short": p["plan_hash"][:12],
+            }
+        plans.append(view)
+    # Triage evidence (C12): a life-risk signal with an unknown people
+    # count is ambiguous — flag for a human, never silently re-score.
+    human_review = (facts.get("life_risk_condition") in
+                    ("trapped", "medical_emergency")
+                    and facts.get("people_count") is None)
     return {
         "incident_id": inc["incident_id"],
         "location_code": inc["location_code"],
@@ -63,6 +84,7 @@ def incident_view(store, inc):
         "medical_override": bool(inc["medical_override"]),
         "missing_info": json.loads(inc["missing_info"]),
         "queue_rank": inc["queue_rank"],
+        "human_review": human_review,
         "facts": {k: v for k, v in facts.items() if not k.startswith("_")},
         "reports": reports,
         "plans": plans,
@@ -98,6 +120,24 @@ def state_view(store):
         loc = locations[inc["location_code"]]
         area_updates.append(templates_hi.area_update(
             {"code": loc["code"], "name": loc["name"]}, status, crew_name))
+    # Visible tool traces (C9): latest calls per agent, chronological.
+    traces = {"agent_a": [], "agent_b": []}
+    for row in audit:
+        if row["event"] == "TOOL_CALL" and row["actor"] in traces:
+            traces[row["actor"]].append(row["payload"])
+    for key in traces:
+        traces[key] = list(reversed(traces[key][:12]))
+    # Ward situation update, Hindi + English (C10).
+    alert_rows = store.all("SELECT * FROM alerts ORDER BY id DESC")
+    latest_alert = alert_rows[0]["text"] if alert_rows else None
+    acked = sum(1 for d in inbox_rows
+                if d["state"] in ("acknowledged", "completed"))
+    situation = {
+        "en": templates_hi.situation_en(len(queue), acked, latest_alert),
+        "hi": templates_hi.situation_hi(len(queue), acked, latest_alert),
+        "synthetic": True,
+        "alerts": [dict(a) for a in alert_rows],
+    }
     return {
         "ward": "Ghatauli",
         "synthetic": True,
@@ -108,6 +148,8 @@ def state_view(store):
         "audit": audit,
         "last_resort": last_resort,
         "area_updates": area_updates,
+        "tool_traces": traces,
+        "situation": situation,
         "rules_mode": True,
         "rules_banner": templates_hi.RULES_MODE_LINE,
     }
@@ -175,30 +217,56 @@ def api_sos():
     return replay.inject_sos(get_store())
 
 
+def _actor(request, default):
+    """Caller identity for the server-side authorization boundary (C8).
+    The console sends operator/responder identities; a request claiming
+    an agent identity is rejected by the gate/tools layer itself."""
+    return request.headers.get("x-actor", default)
+
+
 @app.post("/api/approve")
 async def api_approve(request: Request):
     body = await request.json()
     return _json(gate_mod.approve(get_store(), body["plan_id"],
-                                  int(body["seen_version"])))
+                                  int(body["seen_version"]),
+                                  actor=_actor(request, "operator")))
 
 
 @app.post("/api/dispatch")
 async def api_dispatch(request: Request):
     body = await request.json()
     return _json(tools.dispatch(get_store(), body["plan_id"],
-                                body["approval_id"]))
+                                body["approval_id"],
+                                actor=_actor(request, "operator"),
+                                idempotency_key=body.get("idempotency_key")))
 
 
 @app.post("/api/ack")
 async def api_ack(request: Request):
     body = await request.json()
-    return _json(tools.acknowledge(get_store(), body["dispatch_id"]))
+    return _json(tools.acknowledge(get_store(), body["dispatch_id"],
+                                   actor=_actor(request, "responder")))
 
 
 @app.post("/api/complete")
 async def api_complete(request: Request):
     body = await request.json()
-    return _json(tools.complete(get_store(), body["dispatch_id"]))
+    return _json(tools.complete(get_store(), body["dispatch_id"],
+                                actor=_actor(request, "responder")))
+
+
+@app.post("/api/alert")
+async def api_alert(request: Request):
+    body = await request.json()
+    return _json(alerts_mod.ingest_alert(get_store(), {
+        "alert_id": body.get("alert_id"),
+        "type": body.get("type", "road_closure"),
+        "location_hint": body.get("location_hint", "LOC-01"),
+        "text": body.get(
+            "text",
+            "Synthetic alert: road closure reported near the Ghatauli "
+            "main crossing (LOC-01)."),
+    }))
 
 
 @app.post("/api/scenario")
@@ -206,6 +274,12 @@ def api_scenario():
     store = reset_store()
     result = replay.run_scenario(store)
     return result
+
+
+@app.post("/api/scenario-setup")
+def api_scenario_setup():
+    store = reset_store()
+    return replay.scenario_setup(store)
 
 
 @app.get("/")
